@@ -1,0 +1,40 @@
+
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: log-postgres
+    environment:
+      POSTGRES_DB: logsdbjio
+      POSTGRES_USER: loguserjio
+      POSTGRES_PASSWORD: logpassjio
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/migrations:/migrations
+
+  backend:
+    build: ./backend
+    container_name: log-backend
+    ports:
+      - "6001:6001"
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: logsdbjio
+      DB_USER: loguserjio
+      DB_PASSWORD: logpassjio
+
+  frontend:
+    build: ./frontend
+    container_name: log-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
