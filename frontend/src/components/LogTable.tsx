@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { cn } from "@/lib/utils";
-import { fetchLogs, searchNormal, searchGin, fetchFilterOptions, fetchFilteredLogs } from "../api/logs";
+import { fetchLogs, searchGin, fetchFilterOptions, fetchFilteredLogs } from "../api/logs";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -14,51 +14,29 @@ import { Separator } from "@/components/ui/separator";
 
 const ITEMS_PER_PAGE = 10;
 
+type ViewSource = "all" | "search_gin" | "filter";
+
 export default function LogTable() {
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [viewMode, setViewMode] = useState<"table" | "scroll">("table");
+
+  const [viewSource, setViewSource] = useState<ViewSource>("all");
+
   const [query, setQuery] = useState("");
   const [searchTime, setSearchTime] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(true);
+
   const [filterApp, setFilterApp] = useState("");
   const [filterService, setFilterService] = useState("");
   const [filterLevel, setFilterLevel] = useState("");
-  const [dropdownOptions, setDropdownOptions] = useState({ apps: [], services: [], });
+  const [dropdownOptions, setDropdownOptions] = useState({ apps: [], services: [] });
+
   const observerTarget = useRef(null);
   const pageRef = useRef(1);
   const isFetching = useRef(false);
-
-  const getPaginationRange = () => {
-    const delta = 2;
-    const range = [];
-    const rangeWithDots = [];
-    let l;
-    for (let i = 1; i <= totalPages; i++) {
-      if (
-        i === 1 ||
-        i === totalPages ||
-        (i >= currentPage - delta && i <= currentPage + delta)
-      ) {
-        range.push(i);
-      }
-    }
-    for (let i of range) {
-      if (l) {
-        if (i - l === 2) {
-          rangeWithDots.push(l + 1);
-        } else if (i - l > 2) {
-          rangeWithDots.push("...");
-        }
-      }
-      rangeWithDots.push(i);
-      l = i;
-    }
-    return rangeWithDots;
-  };
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchFilterOptions()
@@ -66,36 +44,51 @@ export default function LogTable() {
       .catch(console.error);
   }, []);
 
-  
+  const loadData = useCallback(async (page: number, append: boolean = false, sourceOverride?: ViewSource) => {
+    if (isFetching.current) return;
 
-  const loadLogs = useCallback(async (page: number, append: boolean = false) => {
-    if (isFetching.current) return; // EXIT if already fetching
+    const source = sourceOverride || viewSource;
 
     try {
-      isFetching.current = true; // LOCK
+      isFetching.current = true;
       setLoading(true);
-      const data = await fetchLogs(page, ITEMS_PER_PAGE);
 
-      setLogs((prev) => (append ? [...prev, ...(data.logs || [])] : (data.logs || [])));
+      let data;
+
+      switch (source) {
+        case "search_gin":
+          data = await searchGin(query, page, ITEMS_PER_PAGE);
+          setSearchTime(`GIN Search: ${data.time_ms} ms`);
+          break;
+        case "filter":
+          data = await fetchFilteredLogs(filterApp, filterLevel, filterService, page, ITEMS_PER_PAGE);
+          setSearchTime(null);
+          break;
+        default:
+          data = await fetchLogs(page, ITEMS_PER_PAGE);
+          setSearchTime(null);
+          break;
+      }
+
+      const newLogs = data.logs || data.rows || [];
+      setLogs((prev) => (append ? [...prev, ...newLogs] : newLogs));
+
       if (data.totalPages) setTotalPages(data.totalPages);
       pageRef.current = page;
       setCurrentPage(page);
     } catch (err) {
-      console.error("Failed to fetch logs");
+      console.error("Failed to fetch logs", err);
     } finally {
       setLoading(false);
-      isFetching.current = false; 
+      isFetching.current = false;
     }
-  }, []);
+  }, [viewSource, query, filterApp, filterLevel, filterService]);
 
-  // useCallback useMemo React.memo memoization
-
-  // Effect for Table Pagination
   useEffect(() => {
     if (viewMode === "table") {
-      loadLogs(currentPage, false);
+      loadData(currentPage, false);
     }
-  }, [currentPage, viewMode, loadLogs]);
+  }, [currentPage, viewMode, loadData]);
 
   useEffect(() => {
     if (viewMode !== "scroll") return;
@@ -104,35 +97,41 @@ export default function LogTable() {
       (entries) => {
         const entry = entries[0];
         if (entry.isIntersecting && !isFetching.current && pageRef.current < totalPages) {
-          const nextPage = pageRef.current + 1;
-          loadLogs(nextPage, true);
+          loadData(pageRef.current + 1, true);
         }
       },
-      {
-        root: null,
-        rootMargin: "200px",
-        threshold: 0.1
-      }
+      { root: null, rootMargin: "200px", threshold: 0.1 }
     );
 
-    if (observerTarget.current) {
-      observer.observe(observerTarget.current);
-    }
-
+    if (observerTarget.current) observer.observe(observerTarget.current);
     return () => observer.disconnect();
-  }, [viewMode, totalPages, loadLogs]);
+  }, [viewMode, totalPages, loadData]);
 
+  const getPaginationRange = () => {
+    const delta = 2;
+    const range = [];
+    const rangeWithDots = [];
+    let l;
+    for (let i = 1; i <= totalPages; i++) {
+      if (i === 1 || i === totalPages || (i >= currentPage - delta && i <= currentPage + delta)) {
+        range.push(i);
+      }
+    }
+    for (let i of range) {
+      if (l) {
+        if (i - l === 2) rangeWithDots.push(l + 1);
+        else if (i - l > 2) rangeWithDots.push("...");
+      }
+      rangeWithDots.push(i);
+      l = i;
+    }
+    return rangeWithDots;
+  };
 
   return (
     <Card className="w-full">
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="flex items-center gap-4">
-            Application Logs
-          </CardTitle>
-
-
-        </div>
+        <CardTitle>Application Logs</CardTitle>
       </CardHeader>
 
       <CardContent className="space-y-4">
@@ -143,68 +142,37 @@ export default function LogTable() {
             onChange={(e) => setQuery(e.target.value)}
             className="w-[300px]"
           />
-          <Button
-            onClick={async () => {
-              const data = await searchNormal(query, 1, ITEMS_PER_PAGE);
-              setLogs(data.rows);
-              setSearchTime(`Normal Search: ${data.time_ms} ms`);
-              if (data.totalPages) setTotalPages(data.totalPages);
-              setIsLive(false);
-              setViewMode("table");
-            }}
-          >
-            Normal Search
-          </Button>
 
           <Button
-            onClick={async () => {
-              const data = await searchGin(query, 1, ITEMS_PER_PAGE);
-              setLogs(data.rows);
-              setSearchTime(`GIN Search: ${data.time_ms} ms`);
-              if (data.totalPages) setTotalPages(data.totalPages);
+            onClick={() => {
+              setLogs([]);
+              setViewSource("search_gin");
+              setCurrentPage(1);
               setIsLive(false);
-              setViewMode("table");
             }}
           >
             GIN Search
           </Button>
 
           <Button
+            variant="outline"
             onClick={() => {
               setFilterApp("");
               setFilterService("");
               setFilterLevel("");
+              setQuery("");
+              setLogs([]);
+              setViewSource("all");
               setCurrentPage(1);
               setIsLive(true);
-              setSearchTime(null);
-              setViewMode("table");
-              loadLogs(1, false);
             }}
           >
             Reset
           </Button>
-
-          {!isLive && (
-            <Button
-              variant="destructive"
-              onClick={() => {
-                setIsLive(true);
-                setCurrentPage(1);
-                setSearchTime(null);
-                loadLogs(1, false);
-              }}
-            >
-              Go Live
-            </Button>
-          )}
         </div>
 
+        {searchTime && <div className="text-sm text-muted-foreground">⏱ {searchTime}</div>}
 
-        {searchTime && (
-          <div className="text-sm text-muted-foreground">
-            ⏱ {searchTime}
-          </div>
-        )}
         <LogFilters
           filterApp={filterApp}
           setFilterApp={setFilterApp}
@@ -213,65 +181,31 @@ export default function LogTable() {
           filterLevel={filterLevel}
           setFilterLevel={setFilterLevel}
           dropdownOptions={dropdownOptions}
-          onApply={async () => {
-            const data = await fetchFilteredLogs(
-              filterApp,
-              filterLevel,
-              filterService,
-              1,
-              ITEMS_PER_PAGE
-            );
-
-            setLogs(data.logs || data);
-
-            if (data.totalPages) setTotalPages(data.totalPages);
-
+          onApply={() => {
+            setLogs([]);
+            setViewSource("filter");
+            setCurrentPage(1);
             setIsLive(false);
-            setSearchTime(null);
-            setViewMode("table");
           }}
         />
 
         <Separator />
-        <div className="inline-flex items-center gap-2 bg-muted/30 p-2 rounded-md border w-fit">
 
-          <ToggleGroup
-            type="single"
-            value={viewMode}
-            onValueChange={(value) => {
-              if (!value) return;
-
-              const mode = value as "table" | "scroll";
-
-              setViewMode(mode);
-              setCurrentPage(1);
-              setLogs([]);
-              pageRef.current = 1;
-
-              if (mode === "scroll") {
-                loadLogs(1, false);
-              }
-            }}
-          >
-            <ToggleGroupItem value="table">
-              <TableIcon className="h-4 w-4" />
-            </ToggleGroupItem>
-
-            <ToggleGroupItem value="scroll">
-              <ArrowDown className="h-4 w-4" />
-            </ToggleGroupItem>
-          </ToggleGroup>
-        </div>
-        <div
-          ref={scrollContainerRef}
-          id="log-scroll-container"
-          className={cn(
-            "relative border rounded-md transition-all w-full",
-            viewMode === "scroll"
-              ? "h-[600px] overflow-y-scroll overflow-x-hidden"
-              : "h-auto overflow-visible"
-          )}
+        <ToggleGroup
+          type="single"
+          value={viewMode}
+          onValueChange={(value) => {
+            if (!value) return;
+            setViewMode(value as "table" | "scroll");
+            setCurrentPage(1);
+            setLogs([]);
+          }}
         >
+          <ToggleGroupItem value="table"><TableIcon className="h-4 w-4" /></ToggleGroupItem>
+          <ToggleGroupItem value="scroll"><ArrowDown className="h-4 w-4" /></ToggleGroupItem>
+        </ToggleGroup>
+
+        <div className={cn("relative border rounded-md w-full", viewMode === "scroll" ? "h-[600px] overflow-y-scroll" : "h-auto")}>
           <Table className="w-full">
             <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
               <TableRow>
@@ -282,77 +216,54 @@ export default function LogTable() {
                 <TableHead className="text-right">Time</TableHead>
               </TableRow>
             </TableHeader>
-
             <TableBody>
               {logs.map((log, index) => (
                 <TableRow key={`${log.id}-${index}`}>
                   <TableCell className="font-medium">{log.app_name}</TableCell>
                   <TableCell>{log.service}</TableCell>
                   <TableCell>
-                    <Badge variant={log.level.toLowerCase() as any}>
-                      {log.level.toUpperCase()}
-                    </Badge>
+                    <Badge variant={log.level.toLowerCase() as any}>{log.level.toUpperCase()}</Badge>
                   </TableCell>
-                  <TableCell className="whitespace-normal break-words">
-                    {log.message}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {new Date(log.received_at).toLocaleTimeString()}
-                  </TableCell>
+                  <TableCell className="whitespace-normal break-words">{log.message}</TableCell>
+                  <TableCell className="text-right">{new Date(log.received_at).toLocaleTimeString()}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
 
-          {/* IMPORTANT: This must be INSIDE the scrollable container */}
           {viewMode === "scroll" && (
             <div ref={observerTarget} className="py-4 flex justify-center w-full">
-              {loading ? (
-                <span className="text-sm text-muted-foreground animate-pulse">Loading more logs...</span>
-              ) : currentPage >= totalPages ? (
-                <span className="text-sm text-muted-foreground">All relevant logs loaded.</span>
-              ) : null}
+              {loading ? <span className="animate-pulse">Loading more...</span> : currentPage >= totalPages ? <span>No more logs.</span> : null}
             </div>
           )}
         </div>
 
         {viewMode === "table" && (
-          <>
-            <Separator />
-            <Pagination>
-              <PaginationContent>
-                <PaginationItem>
-                  <PaginationPrevious
-                    onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
-                    className={currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
-                  />
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious 
+                  onClick={() => setCurrentPage(p => Math.max(p - 1, 1))} 
+                  className={currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                />
+              </PaginationItem>
+              {getPaginationRange().map((page, i) => (
+                <PaginationItem key={i}>
+                  {page === "..." ? <span className="px-3">...</span> : (
+                    <PaginationLink isActive={currentPage === page} onClick={() => setCurrentPage(page as number)} className="cursor-pointer">
+                      {page}
+                    </PaginationLink>
+                  )}
                 </PaginationItem>
-
-                {getPaginationRange().map((page, index) => (
-                  <PaginationItem key={index}>
-                    {page === "..." ? (
-                      <span className="px-3 py-2">...</span>
-                    ) : (
-                      <PaginationLink
-                        isActive={currentPage === page}
-                        onClick={() => setCurrentPage(page as number)}
-                        className="cursor-pointer"
-                      >
-                        {page}
-                      </PaginationLink>
-                    )}
-                  </PaginationItem>
-                ))}
-
-                <PaginationItem>
-                  <PaginationNext
-                    onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
-                    className={currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"}
-                  />
-                </PaginationItem>
-              </PaginationContent>
-            </Pagination>
-          </>
+              ))}
+              <PaginationItem>
+                <PaginationNext 
+                  onClick={() => setCurrentPage(p => Math.min(p + 1, totalPages))} 
+                  className={currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
         )}
       </CardContent>
     </Card>
